@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KosherTube</title>
+    <!-- Load Tailwind CSS for simple, mobile-first styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load the YouTube IFrame Player API script -->
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <!-- Import Roboto font for YouTube look -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        /* Custom CSS to mimic YouTube's UI */
+        html {
+            scroll-behavior: smooth;
+        }
+        body {
+            font-family: 'Roboto', sans-serif;
+            background-color: #181818; /* Fallback for older browsers */
+            background-image: radial-gradient(ellipse at top, #381010, #181818 70%);
+            min-height: 100vh; /* Ensure gradient covers the full page */
+        }
+        .video-card {
+            cursor: pointer;
+            overflow: hidden;
+        }
+        .thumbnail-container {
+            position: relative;
+            padding-bottom: 56.25%; /* 16:9 Aspect Ratio */
+            height: 0;
+            overflow: hidden;
+            background-color: #333; /* Darker placeholder color */
+        }
+        .thumbnail-container img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.2s ease-in-out;
+        }
+        .video-card:hover .thumbnail-container img {
+            transform: scale(1.05);
+        }
+        #player-container > #yt-player,
+        #player-container > #yt-player iframe {
+            width: 100%;
+            height: 100%;
+        }
+        /* For the horizontal channel scrollbar */
+        #subscriptions-filter-bar::-webkit-scrollbar {
+            height: 4px;
+        }
+        #subscriptions-filter-bar::-webkit-scrollbar-thumb {
+            background-color: #555;
+            border-radius: 2px;
+        }
+        #subscriptions-filter-bar::-webkit-scrollbar-track {
+            background-color: #2a2a2a;
+        }
+    </style>
+</head>
+<body class="text-gray-200">
+
+    <!-- Header -->
+    <header class="sticky top-0 z-40 px-4 sm:px-8 py-3 flex flex-wrap items-center justify-between gap-4 bg-[#181818] bg-opacity-80 backdrop-blur-lg border-b border-gray-800 shadow-md">
+        <div class="flex items-center">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-red-600 mr-3" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" />
+            </svg>
+            <h1 class="text-2xl font-semibold text-gray-100 tracking-tight">KosherTube</h1>
+        </div>
+
+        <div class="relative flex-grow max-w-md mx-auto">
+            <input type="text" id="search-input" placeholder="Search" class="w-full px-4 py-2 border border-gray-700 bg-gray-900 text-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent placeholder-gray-500">
+            <svg class="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
+            </svg>
+        </div>
+    </header>
+
+
+    <!-- Global Configuration & Auth Stub -->
+    <script>
+        // --- MANDATORY CONFIGURATION START ---
+        const API_KEY = "AIzaSyB69X5TLdKbVHvcKvS08tIXo7TmN5NaOgw"; 
+        const CHANNEL_IDS = [
+            'UC7JSUzO2RHDjGS3t9Ry_wYA', // ezra bodanski
+            'UCsRsAviXNbkW4JdTOVMiz4Q', // abraham shwarts
+            'UC_x5XG1OV2P6uZZ5FSM9Ttw', // Marques Brownlee
+        ];
+        const VIDEO_IDS = ['YddwkMJG1Jo',]; // Example: A specific video ID
+        const MAX_RESULTS = 10; // Max latest videos to fetch per channel
+        const appId = typeof __app_id !== 'undefined' ? __app_id : crypto.randomUUID();
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // --- MANDATORY CONFIGURATION END ---
+
+        let player = null;
+        let currentVideoId = null;
+        let allFetchedVideos = [];
+        let channelAvatars = new Map();
+        let currentChannelId = null;
+        let currentSortMode = 'forYou';
+        let subscribedChannels = [];
+        let selectedSubscriptionChannelId = 'all';
+
+        function timeSince(isoDateString) {
+            const date = new Date(isoDateString);
+            const seconds = Math.floor((new Date() - date) / 1000);
+            let interval = seconds / 31536000;
+            if (interval > 1) return Math.floor(interval) + " years ago";
+            interval = seconds / 2592000;
+            if (interval > 1) return Math.floor(interval) + " months ago";
+            interval = seconds / 86400;
+            if (interval > 1) return Math.floor(interval) + " days ago";
+            interval = seconds / 3600;
+            if (interval > 1) return Math.floor(interval) + " hours ago";
+            interval = seconds / 60;
+            if (interval > 1) return Math.floor(interval) + " minutes ago";
+            return Math.floor(seconds) + " seconds ago";
+        }
+
+        async function fetchChannelVideos(channelId) {
+            if (!API_KEY) return { success: false, error: 'API Key is missing.' };
+            if (!channelId || channelId.trim() === '') return { success: true, videos: [] };
+
+            const url = new URL('https://www.googleapis.com/youtube/v3/search');
+            url.searchParams.append('key', API_KEY);
+            url.searchParams.append('channelId', channelId);
+            url.searchParams.append('part', 'snippet');
+            url.searchParams.append('type', 'video');
+            url.searchParams.append('order', 'date');
+            url.searchParams.append('maxResults', MAX_RESULTS);
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error?.message || `HTTP error! status: ${response.status}`);
+                const videos = data.items.map(item => ({
+                    videoId: item.id.videoId,
+                    title: item.snippet.title,
+                    channelTitle: item.snippet.channelTitle,
+                    publishedAt: item.snippet.publishedAt,
+                    thumbnailUrl: item.snippet.thumbnails.high.url,
+                    channelId: item.snippet.channelId
+                }));
+                return { success: true, videos: videos };
+            } catch (error) {
+                console.error(`Error fetching videos for channel ${channelId}:`, error);
+                return { success: false, error: error.message, channelId: channelId };
+            }
+        }
+
+        async function fetchSingleVideos(videoIds) {
+            if (!API_KEY) return { success: false, error: 'API Key is missing.' };
+            const validVideoIds = videoIds.filter(id => id && id.trim() !== '');
+            if (validVideoIds.length === 0) return { success: true, videos: [] };
+
+            const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+            url.searchParams.append('key', API_KEY);
+            url.searchParams.append('id', validVideoIds.join(','));
+            url.searchParams.append('part', 'snippet');
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error?.message || `HTTP error! status: ${response.status}`);
+                const videos = data.items.map(item => ({
+                    videoId: item.id,
+                    title: item.snippet.title,
+                    channelTitle: item.snippet.channelTitle,
+                    publishedAt: item.snippet.publishedAt,
+                    thumbnailUrl: item.snippet.thumbnails.high.url,
+                    channelId: item.snippet.channelId
+                }));
+                return { success: true, videos: videos };
+            } catch (error) {
+                console.error(`Error fetching single videos:`, error);
+                return { success: false, error: error.message };
+            }
+        }
+        
+        async function fetchChannelDetails(channelIds) {
+            if (!API_KEY || channelIds.length === 0) return new Map();
+
+            const url = new URL('https://www.googleapis.com/youtube/v3/channels');
+            url.searchParams.append('key', API_KEY);
+            url.searchParams.append('id', channelIds.join(','));
+            url.searchParams.append('part', 'snippet');
+
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error?.message || `HTTP error! status: ${response.status}`);
+                
+                const avatarMap = new Map();
+                data.items.forEach(item => {
+                    avatarMap.set(item.id, item.snippet.thumbnails.default.url);
+                });
+                return avatarMap;
+
+            } catch (error) {
+                console.error(`Error fetching channel details:`, error);
+                return new Map();
+            }
+        }
+
+        async function fetchAllVideosFromSources() {
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('api-error-message').classList.add('hidden');
+            const validChannelIds = CHANNEL_IDS.filter(id => id && id.trim() !== '');
+            const promises = [...validChannelIds.map(fetchChannelVideos), fetchSingleVideos(VIDEO_IDS)];
+            const results = await Promise.all(promises);
+            let allVideos = [];
+            const failedSources = [];
+
+            results.forEach(result => {
+                if (result.success) {
+                    allVideos.push(...result.videos);
+                } else if (result.error) {
+                    failedSources.push({ id: result.channelId || 'Single Videos', error: result.error });
+                }
+            });
+
+            if (failedSources.length > 0) {
+                 const errorMessage = `Failed to fetch some content. Please check API key/IDs. Error: ${failedSources[0].error}`;
+                 document.getElementById('api-error-message').textContent = errorMessage;
+                 document.getElementById('api-error-message').classList.remove('hidden');
+            }
+
+            const uniqueVideos = Array.from(new Map(allVideos.map(v => [v.videoId, v])).values());
+            uniqueVideos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+            document.getElementById('loading').classList.add('hidden');
+            return uniqueVideos;
+        }
+
+        function renderVideos(videos, containerId) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = ''; 
+
+            if (videos.length === 0) {
+                const searchTerm = document.getElementById('search-input').value;
+                 if (searchTerm) {
+                    container.innerHTML = `<p class="text-center text-gray-400 col-span-full">No videos found for "${searchTerm}".</p>`;
+                 } else if (currentSortMode === 'subscriptions') {
+                    if (subscribedChannels.length === 0) {
+                        container.innerHTML = `<p class="text-center text-gray-400 col-span-full">You haven't subscribed to any channels yet.</p>`;
+                    } else {
+                        container.innerHTML = `<p class="text-center text-gray-400 col-span-full">No recent videos from your subscribed channels.</p>`;
+                    }
+                 }
+                 else {
+                     container.innerHTML = '<p class="text-center text-gray-400 col-span-full">No videos found. Check your API configuration in the script.</p>';
+                }
+                return;
+            }
+
+            videos.forEach(video => {
+                const card = document.createElement('div');
+                card.className = 'video-card';
+                const avatarUrl = channelAvatars.get(video.channelId);
+                const avatarHtml = avatarUrl
+                    ? `<img src="${avatarUrl}" alt="${video.channelTitle}" class="w-9 h-9 rounded-full">`
+                    : `<div class="w-9 h-9 rounded-full bg-gray-700 flex items-center justify-center text-white font-semibold text-lg">${video.channelTitle.charAt(0)}</div>`;
+
+                card.innerHTML = `
+                    <div class="thumbnail-container rounded-lg" onclick="openPlayerModal('${video.videoId}')">
+                        <img src="${video.thumbnailUrl}" alt="${video.title}" loading="lazy" class="object-cover w-full h-full">
+                    </div>
+                    <div class="flex items-start mt-3">
+                        <div class="flex-shrink-0 mr-3">
+                            ${avatarHtml}
+                        </div>
+                        <div class="flex-grow">
+                            <h2 class="text-base font-bold text-gray-100 leading-snug line-clamp-2" title="${video.title}" onclick="openPlayerModal('${video.videoId}')">${video.title}</h2>
+                            <p onclick="showChannelPage('${video.channelId}')" class="text-sm text-gray-400 mt-1 cursor-pointer hover:text-white transition-colors">${video.channelTitle}</p>
+                            <p class="text-sm text-gray-400">${timeSince(video.publishedAt)}</p>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+        
+        // --- Subscription Logic ---
+        function loadSubscriptions() {
+            const storedSubs = localStorage.getItem('videoFeedSubscriptions');
+            if (storedSubs) {
+                subscribedChannels = JSON.parse(storedSubs);
+            }
+        }
+
+        function saveSubscriptions() {
+            localStorage.setItem('videoFeedSubscriptions', JSON.stringify(subscribedChannels));
+        }
+
+        function isSubscribed(channelId) {
+            return subscribedChannels.includes(channelId);
+        }
+
+        function updateSubscribeButton(channelId) {
+            const subBtn = document.getElementById('subscribe-btn');
+            if (isSubscribed(channelId)) {
+                subBtn.textContent = 'Unsubscribe';
+                subBtn.className = 'px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium';
+            } else {
+                subBtn.textContent = 'Subscribe';
+                subBtn.className = 'px-4 py-1.5 bg-red-600 text-white rounded-full text-sm font-medium hover:bg-red-700';
+            }
+        }
+
+        function toggleSubscription(channelId) {
+            if (!channelId) return;
+            const index = subscribedChannels.indexOf(channelId);
+            if (index > -1) {
+                subscribedChannels.splice(index, 1);
+            } else {
+                subscribedChannels.push(channelId);
+            }
+            saveSubscriptions();
+            updateSubscribeButton(channelId);
+            if(currentSortMode === 'subscriptions') {
+                displayMainFeedVideos();
+            }
+        }
+
+        // --- Main Feed Logic ---
+        function filterVideos() {
+            const searchTerm = document.getElementById('search-input').value.toLowerCase();
+             if (!searchTerm) {
+                displayMainFeedVideos();
+                return;
+            }
+            const filtered = allFetchedVideos.filter(v => v.title.toLowerCase().includes(searchTerm) || v.channelTitle.toLowerCase().includes(searchTerm));
+            renderVideos(filtered, 'video-grid');
+            updateMainMenuButtons(null);
+            document.getElementById('subscriptions-filter-bar').classList.add('hidden');
+        }
+
+        function updateMainMenuButtons(activeMenu) {
+            const forYouBtn = document.getElementById('menu-foryou-btn');
+            const recentBtn = document.getElementById('menu-recent-btn');
+            const subsBtn = document.getElementById('menu-subscriptions-btn');
+            
+            const activeClasses = 'px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium';
+            const inactiveClasses = 'px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white';
+
+            if(forYouBtn) forYouBtn.className = (activeMenu === 'forYou') ? activeClasses : inactiveClasses;
+            if(recentBtn) recentBtn.className = (activeMenu === 'recent') ? activeClasses : inactiveClasses;
+            if(subsBtn) subsBtn.className = (activeMenu === 'subscriptions') ? activeClasses : inactiveClasses;
+        }
+        
+        function renderSubscriptionChannelBar() {
+            const bar = document.getElementById('subscriptions-filter-bar');
+            bar.innerHTML = '';
+            
+            if (subscribedChannels.length === 0) {
+                bar.classList.add('hidden');
+                return;
+            }
+            
+            bar.classList.remove('hidden');
+
+            const channelDetails = new Map();
+            allFetchedVideos.forEach(video => {
+                if (subscribedChannels.includes(video.channelId) && !channelDetails.has(video.channelId)) {
+                    channelDetails.set(video.channelId, video.channelTitle);
+                }
+            });
+
+            // "All" button
+            const allBtn = document.createElement('button');
+            allBtn.textContent = 'All';
+            allBtn.onclick = () => filterSubscriptionFeed('all');
+            allBtn.className = `flex-shrink-0 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${selectedSubscriptionChannelId === 'all' ? 'bg-gray-200 text-gray-900' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'}`;
+            bar.appendChild(allBtn);
+
+            channelDetails.forEach((title, id) => {
+                const channelBtn = document.createElement('button');
+                const avatarUrl = channelAvatars.get(id);
+                const avatarHtml = avatarUrl
+                    ? `<img src="${avatarUrl}" alt="${title}" class="w-8 h-8 rounded-full">`
+                    : `<div class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-white font-semibold text-base">${title.charAt(0)}</div>`;
+
+                channelBtn.className = `flex-shrink-0 flex items-center gap-2 p-2 rounded-lg text-sm font-medium transition-colors ${selectedSubscriptionChannelId === id ? 'bg-gray-700' : 'hover:bg-gray-700'}`;
+                channelBtn.onclick = () => filterSubscriptionFeed(id);
+                channelBtn.innerHTML = avatarHtml;
+                bar.appendChild(channelBtn);
+            });
+        }
+        
+        function filterSubscriptionFeed(channelId) {
+            selectedSubscriptionChannelId = channelId;
+            displayMainFeedVideos();
+        }
+
+        function displayMainFeedVideos() {
+            let videosToRender = [...allFetchedVideos];
+            const subsFilterBar = document.getElementById('subscriptions-filter-bar');
+
+            if (currentSortMode === 'forYou') {
+                subsFilterBar.classList.add('hidden');
+                for (let i = videosToRender.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [videosToRender[i], videosToRender[j]] = [videosToRender[j], videosToRender[i]];
+                }
+            } else if (currentSortMode === 'subscriptions') {
+                 renderSubscriptionChannelBar();
+                 let filteredBySub = videosToRender.filter(v => subscribedChannels.includes(v.channelId));
+                 if (selectedSubscriptionChannelId !== 'all') {
+                     videosToRender = filteredBySub.filter(v => v.channelId === selectedSubscriptionChannelId);
+                 } else {
+                     videosToRender = filteredBySub;
+                 }
+            } else { // 'recent'
+                subsFilterBar.classList.add('hidden');
+            }
+            
+            renderVideos(videosToRender, 'video-grid');
+            updateMainMenuButtons(currentSortMode);
+        }
+    
+        function setSortMode(mode) {
+            currentSortMode = mode;
+            selectedSubscriptionChannelId = 'all';
+            const searchInput = document.getElementById('search-input');
+            if (searchInput.value) searchInput.value = '';
+            displayMainFeedVideos();
+        }
+
+        // --- View Switching & Sorting ---
+        function showChannelPage(channelId) {
+            currentChannelId = channelId;
+            document.getElementById('main-feed-view').classList.add('hidden');
+            document.getElementById('channel-page-view').classList.remove('hidden');
+            window.scrollTo(0, 0);
+
+            const channelVideos = allFetchedVideos.filter(v => v.channelId === channelId);
+            const videoCount = channelVideos.length;
+            const channelTitle = channelVideos[0]?.channelTitle || 'Channel';
+
+            const avatarContainer = document.getElementById('channel-page-avatar');
+            const avatarUrl = channelAvatars.get(channelId);
+            avatarContainer.innerHTML = avatarUrl
+                ? `<img src="${avatarUrl}" alt="${channelTitle}" class="w-12 h-12 rounded-full">`
+                : `<div class="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-2xl">${channelTitle.charAt(0)}</div>`;
+
+
+            document.getElementById('channel-page-title').textContent = channelTitle;
+            document.getElementById('channel-video-count').textContent = `${videoCount} videos`;
+            
+            updateSubscribeButton(channelId);
+            sortAndRenderChannelVideos('newest');
+        }
+
+        function showMainFeed() {
+            currentChannelId = null;
+            document.getElementById('channel-page-view').classList.add('hidden');
+            document.getElementById('main-feed-view').classList.remove('hidden');
+        }
+
+        function updateSortButtons(activeSort) {
+            const newestBtn = document.getElementById('sort-newest-btn');
+            const oldestBtn = document.getElementById('sort-oldest-btn');
+            
+            const activeClasses = 'px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium';
+            const inactiveClasses = 'px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white';
+
+            newestBtn.className = (activeSort === 'newest') ? activeClasses : inactiveClasses;
+            oldestBtn.className = (activeSort === 'oldest') ? activeClasses : inactiveClasses;
+        }
+
+        function sortAndRenderChannelVideos(sortBy) {
+            if (!currentChannelId) return;
+            const channelVideos = allFetchedVideos.filter(v => v.channelId === currentChannelId);
+            if (sortBy === 'newest') {
+                channelVideos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+            } else if (sortBy === 'oldest') {
+                channelVideos.sort((a, b) => new Date(a.publishedAt) - new Date(b.publishedAt));
+            }
+            renderVideos(channelVideos, 'channel-video-grid');
+            updateSortButtons(sortBy);
+        }
+
+        // --- Player and Modal Logic ---
+        function setupPlayer(videoId) {
+            if (player) player.destroy();
+            document.getElementById('player-container').innerHTML = '<div id="yt-player"></div>';
+            player = new YT.Player('yt-player', {
+                videoId: videoId,
+                playerVars: { 'playsinline': 1, 'enablejsapi': 1, 'rel': 0, 'modestbranding': 1, 'origin': window.location.origin, 'controls': 1, 'autoplay': 1, 'iv_load_policy': 3 },
+                events: { 'onReady': () => console.log("Player ready."), 'onStateChange': onPlayerStateChange }
+            });
+        }
+
+        function onPlayerStateChange(event) {
+            if (event.data === YT.PlayerState.ENDED) {
+                event.target.stopVideo();
+                removePlayerIframe();
+                document.getElementById('video-ended-overlay').classList.remove('hidden');
+            }
+        }
+
+        function removePlayerIframe() {
+            if (player) {
+                player.destroy();
+                player = null;
+                currentVideoId = null;
+            }
+            const playerContainer = document.getElementById('player-container');
+            if(playerContainer) playerContainer.innerHTML = '';
+        }
+
+        function openPlayerModal(videoId) {
+            document.getElementById('player-modal').classList.remove('hidden');
+            document.body.classList.add('overflow-hidden');
+            document.getElementById('video-ended-overlay').classList.add('hidden');
+            currentVideoId = videoId;
+            setupPlayer(videoId);
+        }
+
+        function closePlayerModal() {
+            document.getElementById('player-modal').classList.add('hidden');
+            document.body.classList.remove('overflow-hidden');
+            removePlayerIframe();
+        }
+
+        function replayVideo() {
+            document.getElementById('video-ended-overlay').classList.add('hidden');
+            if (currentVideoId) setupPlayer(currentVideoId);
+        }
+        
+        window.onload = async function() {
+            loadSubscriptions();
+            allFetchedVideos = await fetchAllVideosFromSources();
+            const allChannelIds = [...new Set(allFetchedVideos.map(v => v.channelId))];
+            channelAvatars = await fetchChannelDetails(allChannelIds);
+            displayMainFeedVideos();
+            document.getElementById('search-input').addEventListener('input', filterVideos);
+            document.getElementById('player-modal').addEventListener('click', e => { if (e.target.id === 'player-modal') closePlayerModal(); });
+        };
+        
+        function onYouTubeIframeAPIReady() { console.log("YouTube API Script Loaded."); }
+    </script>
+    
+    <!-- Main Feed View -->
+    <div id="main-feed-view">
+        <div class="px-4 sm:px-8 mt-6">
+             <div id="main-feed-menu" class="flex items-center space-x-2 pb-4 border-b border-gray-800">
+                <button id="menu-foryou-btn" onclick="setSortMode('forYou')" class="px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium">For You</button>
+                <button id="menu-recent-btn" onclick="setSortMode('recent')" class="px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Recently Uploaded</button>
+                <button id="menu-subscriptions-btn" onclick="setSortMode('subscriptions')" class="px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Subscriptions</button>
+            </div>
+             <div id="subscriptions-filter-bar" class="hidden flex items-center gap-4 overflow-x-auto py-4">
+                <!-- Channel avatars for filtering will be inserted here by JS -->
+            </div>
+        </div>
+
+        <div id="api-error-message" class="px-4 sm:px-8 hidden max-w-4xl mx-auto mb-6 p-4 bg-red-900 bg-opacity-50 text-red-200 border border-red-700 rounded-lg"></div>
+        <div id="loading" class="text-center p-8">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 inline-block mr-2"></div>
+            <span class="text-gray-400">Loading latest videos...</span>
+        </div>
+        <main id="video-grid" class="px-4 sm:px-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8"></main>
+    </div>
+    
+    <!-- Channel Page View -->
+    <div id="channel-page-view" class="hidden">
+        <div class="px-4 sm:px-8 mt-8">
+            <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+                <div class="flex items-center">
+                    <button onclick="showMainFeed()" class="flex items-center text-gray-400 hover:text-white transition-colors mr-4">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+                        </svg>
+                        Back
+                    </button>
+                    <div class="flex items-center gap-4">
+                        <div id="channel-page-avatar" class="w-12 h-12 rounded-full bg-gray-700 flex-shrink-0"></div>
+                        <div>
+                            <h2 id="channel-page-title" class="text-2xl font-bold text-white"></h2>
+                            <span id="channel-video-count" class="text-gray-400 text-base font-normal"></span>
+                        </div>
+                    </div>
+                </div>
+                <button id="subscribe-btn" onclick="toggleSubscription(currentChannelId)" class="px-4 py-1.5 bg-red-600 text-white rounded-full text-sm font-medium hover:bg-red-700"></button>
+            </div>
+            <div class="flex items-center space-x-2 mb-6">
+                <button id="sort-newest-btn" onclick="sortAndRenderChannelVideos('newest')" class="px-4 py-1.5 bg-gray-700 text-white rounded-full text-sm font-medium">Newest</button>
+                <button id="sort-oldest-btn" onclick="sortAndRenderChannelVideos('oldest')" class="px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Oldest</button>
+            </div>
+             <main id="channel-video-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8"></main>
+        </div>
+    </div>
+
+
+    <!-- Video Player Modal -->
+    <div id="player-modal" class="hidden fixed inset-0 z-50 bg-black bg-opacity-80 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+        <div class="relative w-full max-w-4xl bg-black rounded-xl overflow-hidden shadow-2xl">
+            <button onclick="closePlayerModal()" class="absolute top-2 right-2 z-20 text-white bg-black bg-opacity-50 p-2 rounded-full hover:bg-gray-700 transition" aria-label="Close video player">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+            
+            <div class="w-full relative" style="padding-top: 56.25%;">
+                <div id="player-container" class="absolute top-0 left-0 w-full h-full"></div>
+                <div id="video-ended-overlay" class="hidden absolute inset-0 bg-gray-900 flex flex-col items-center justify-center space-y-4">
+                    <h2 class="text-3xl font-bold text-white">Playback Finished</h2>
+                    <div class="flex space-x-4 mt-4">
+                        <button onclick="replayVideo()" class="px-6 py-2 bg-red-600 text-white font-semibold rounded-lg shadow-lg hover:bg-red-700 transition">Replay</button>
+                        <button onclick="closePlayerModal()" class="px-6 py-2 bg-gray-600 text-white font-semibold rounded-lg shadow-lg hover:bg-gray-700 transition">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+
