@@ -24,8 +24,9 @@
             min-height: 100vh; /* Ensure gradient covers the full page */
         }
         .video-card {
+            position: relative;
             cursor: pointer;
-            overflow: hidden;
+            overflow: visible; /* Allow the watch later button to be visible */
         }
         .thumbnail-container {
             position: relative;
@@ -46,6 +47,9 @@
         .video-card:hover .thumbnail-container img {
             transform: scale(1.05);
         }
+        .short-card .thumbnail-container {
+            padding-bottom: 177.77%; /* 9:16 Aspect Ratio for Shorts */
+        }
         #player-container > #yt-player,
         #player-container > #yt-player iframe {
             width: 100%;
@@ -61,6 +65,21 @@
         }
         #subscriptions-filter-bar::-webkit-scrollbar-track {
             background-color: #2a2a2a;
+        }
+        /* Watch Later Button */
+        .watch-later-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background-color: rgba(0, 0, 0, 0.8);
+            border-radius: 4px;
+            padding: 4px;
+            opacity: 0;
+            transition: opacity 0.2s ease-in-out;
+            z-index: 10;
+        }
+        .video-card:hover .watch-later-btn {
+            opacity: 1;
         }
     </style>
 </head>
@@ -78,7 +97,7 @@
         <div class="relative flex-grow max-w-md mx-auto">
             <input type="text" id="search-input" placeholder="Search" class="w-full px-4 py-2 border border-gray-700 bg-gray-900 text-gray-200 rounded-full focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent placeholder-gray-500">
             <svg class="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
+                <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 S0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
             </svg>
         </div>
     </header>
@@ -91,10 +110,9 @@
         const CHANNEL_IDS = [
             'UC7JSUzO2RHDjGS3t9Ry_wYA', // ezra bodanski
             'UCsRsAviXNbkW4JdTOVMiz4Q', // abraham shwarts
-            'UC_x5XG1OV2P6uZZ5FSM9Ttw', // Marques Brownlee
         ];
         const VIDEO_IDS = ['YddwkMJG1Jo',]; // Example: A specific video ID
-        const MAX_RESULTS = 10; // Max latest videos to fetch per channel
+        const MAX_RESULTS = 15; // Increased to fetch more potential shorts
         const appId = typeof __app_id !== 'undefined' ? __app_id : crypto.randomUUID();
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
@@ -105,8 +123,11 @@
         let allFetchedVideos = [];
         let channelAvatars = new Map();
         let currentChannelId = null;
-        let currentSortMode = 'forYou';
+        let currentSortMode = 'all'; // Default to 'all'
         let subscribedChannels = [];
+        let watchLaterVideos = [];
+        let videoProgress = {};
+        let progressInterval = null;
         let selectedSubscriptionChannelId = 'all';
 
         function timeSince(isoDateString) {
@@ -125,85 +146,85 @@
             return Math.floor(seconds) + " seconds ago";
         }
 
-        async function fetchChannelVideos(channelId) {
-            if (!API_KEY) return { success: false, error: 'API Key is missing.' };
-            if (!channelId || channelId.trim() === '') return { success: true, videos: [] };
+        function parseDuration(isoDuration) {
+            const regex = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/;
+            const matches = isoDuration.match(regex);
+            if (!matches) return 0;
+            const hours = parseInt(matches[1] || 0);
+            const minutes = parseInt(matches[2] || 0);
+            const seconds = parseInt(matches[3] || 0);
+            return (hours * 3600) + (minutes * 60) + seconds;
+        }
 
+        async function fetchVideoIdsForChannel(channelId) {
+            if (!API_KEY || !channelId || channelId.trim() === '') return [];
             const url = new URL('https://www.googleapis.com/youtube/v3/search');
             url.searchParams.append('key', API_KEY);
             url.searchParams.append('channelId', channelId);
-            url.searchParams.append('part', 'snippet');
+            url.searchParams.append('part', 'id');
             url.searchParams.append('type', 'video');
             url.searchParams.append('order', 'date');
             url.searchParams.append('maxResults', MAX_RESULTS);
-
             try {
                 const response = await fetch(url);
                 const data = await response.json();
-                if (!response.ok) throw new Error(data.error?.message || `HTTP error! status: ${response.status}`);
-                const videos = data.items.map(item => ({
-                    videoId: item.id.videoId,
-                    title: item.snippet.title,
-                    channelTitle: item.snippet.channelTitle,
-                    publishedAt: item.snippet.publishedAt,
-                    thumbnailUrl: item.snippet.thumbnails.high.url,
-                    channelId: item.snippet.channelId
-                }));
-                return { success: true, videos: videos };
+                if (!response.ok) throw new Error(data.error?.message);
+                return data.items.map(item => item.id.videoId);
             } catch (error) {
-                console.error(`Error fetching videos for channel ${channelId}:`, error);
-                return { success: false, error: error.message, channelId: channelId };
-            }
-        }
-
-        async function fetchSingleVideos(videoIds) {
-            if (!API_KEY) return { success: false, error: 'API Key is missing.' };
-            const validVideoIds = videoIds.filter(id => id && id.trim() !== '');
-            if (validVideoIds.length === 0) return { success: true, videos: [] };
-
-            const url = new URL('https://www.googleapis.com/youtube/v3/videos');
-            url.searchParams.append('key', API_KEY);
-            url.searchParams.append('id', validVideoIds.join(','));
-            url.searchParams.append('part', 'snippet');
-
-            try {
-                const response = await fetch(url);
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error?.message || `HTTP error! status: ${response.status}`);
-                const videos = data.items.map(item => ({
-                    videoId: item.id,
-                    title: item.snippet.title,
-                    channelTitle: item.snippet.channelTitle,
-                    publishedAt: item.snippet.publishedAt,
-                    thumbnailUrl: item.snippet.thumbnails.high.url,
-                    channelId: item.snippet.channelId
-                }));
-                return { success: true, videos: videos };
-            } catch (error) {
-                console.error(`Error fetching single videos:`, error);
-                return { success: false, error: error.message };
+                console.error(`Error fetching video IDs for channel ${channelId}:`, error);
+                return [];
             }
         }
         
+        async function fetchFullVideoDetails(videoIds) {
+            if (!API_KEY || videoIds.length === 0) return [];
+            const videoDetails = [];
+            // API allows max 50 ids per request
+            for (let i = 0; i < videoIds.length; i += 50) {
+                const chunk = videoIds.slice(i, i + 50);
+                const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+                url.searchParams.append('key', API_KEY);
+                url.searchParams.append('id', chunk.join(','));
+                url.searchParams.append('part', 'snippet,contentDetails');
+                try {
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    if (!response.ok) throw new Error(data.error?.message);
+                    const details = data.items.map(item => {
+                        const duration = parseDuration(item.contentDetails.duration);
+                        return {
+                            videoId: item.id,
+                            title: item.snippet.title,
+                            channelTitle: item.snippet.channelTitle,
+                            publishedAt: item.snippet.publishedAt,
+                            thumbnailUrl: item.snippet.thumbnails.high.url,
+                            channelId: item.snippet.channelId,
+                            isShort: duration <= 61 && duration > 0 
+                        }
+                    });
+                    videoDetails.push(...details);
+                } catch (error) {
+                     console.error(`Error fetching video details for chunk:`, error);
+                }
+            }
+            return videoDetails;
+        }
+
         async function fetchChannelDetails(channelIds) {
             if (!API_KEY || channelIds.length === 0) return new Map();
-
             const url = new URL('https://www.googleapis.com/youtube/v3/channels');
             url.searchParams.append('key', API_KEY);
             url.searchParams.append('id', channelIds.join(','));
             url.searchParams.append('part', 'snippet');
-
             try {
                 const response = await fetch(url);
                 const data = await response.json();
-                if (!response.ok) throw new Error(data.error?.message || `HTTP error! status: ${response.status}`);
-                
+                if (!response.ok) throw new Error(data.error?.message);
                 const avatarMap = new Map();
                 data.items.forEach(item => {
                     avatarMap.set(item.id, item.snippet.thumbnails.default.url);
                 });
                 return avatarMap;
-
             } catch (error) {
                 console.error(`Error fetching channel details:`, error);
                 return new Map();
@@ -213,40 +234,42 @@
         async function fetchAllVideosFromSources() {
             document.getElementById('loading').classList.remove('hidden');
             document.getElementById('api-error-message').classList.add('hidden');
+            
             const validChannelIds = CHANNEL_IDS.filter(id => id && id.trim() !== '');
-            const promises = [...validChannelIds.map(fetchChannelVideos), fetchSingleVideos(VIDEO_IDS)];
-            const results = await Promise.all(promises);
-            let allVideos = [];
-            const failedSources = [];
+            const idPromises = validChannelIds.map(fetchVideoIdsForChannel);
+            const results = await Promise.all(idPromises);
+            const allIds = [...results.flat(), ...VIDEO_IDS.filter(id => id && id.trim() !== '')];
+            const uniqueIds = [...new Set(allIds)];
 
-            results.forEach(result => {
-                if (result.success) {
-                    allVideos.push(...result.videos);
-                } else if (result.error) {
-                    failedSources.push({ id: result.channelId || 'Single Videos', error: result.error });
-                }
-            });
-
-            if (failedSources.length > 0) {
-                 const errorMessage = `Failed to fetch some content. Please check API key/IDs. Error: ${failedSources[0].error}`;
-                 document.getElementById('api-error-message').textContent = errorMessage;
-                 document.getElementById('api-error-message').classList.remove('hidden');
+            if(uniqueIds.length === 0) {
+                 document.getElementById('loading').classList.add('hidden');
+                 return [];
             }
-
-            const uniqueVideos = Array.from(new Map(allVideos.map(v => [v.videoId, v])).values());
-            uniqueVideos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+            
+            const videos = await fetchFullVideoDetails(uniqueIds);
+            videos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
             document.getElementById('loading').classList.add('hidden');
-            return uniqueVideos;
+            return videos;
         }
 
         function renderVideos(videos, containerId) {
             const container = document.getElementById(containerId);
-            container.innerHTML = ''; 
+            container.innerHTML = '';
+            
+            const isShortsView = currentSortMode === 'shorts';
+
+            // Adjust grid layout for shorts
+            if (isShortsView) {
+                container.className = 'px-4 sm:px-8 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-x-4 gap-y-8';
+            } else {
+                container.className = 'px-4 sm:px-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8';
+            }
 
             if (videos.length === 0) {
-                const searchTerm = document.getElementById('search-input').value;
-                 if (searchTerm) {
-                    container.innerHTML = `<p class="text-center text-gray-400 col-span-full">No videos found for "${searchTerm}".</p>`;
+                 if (currentSortMode === 'shorts') {
+                    container.innerHTML = `<p class="text-center text-gray-400 col-span-full">No Shorts found from the curated channels.</p>`;
+                 } else if (currentSortMode === 'watchLater') {
+                    container.innerHTML = `<p class="text-center text-gray-400 col-span-full">Your "Watch Later" list is empty.</p>`;
                  } else if (currentSortMode === 'subscriptions') {
                     if (subscribedChannels.length === 0) {
                         container.innerHTML = `<p class="text-center text-gray-400 col-span-full">You haven't subscribed to any channels yet.</p>`;
@@ -262,46 +285,78 @@
 
             videos.forEach(video => {
                 const card = document.createElement('div');
-                card.className = 'video-card';
-                const avatarUrl = channelAvatars.get(video.channelId);
-                const avatarHtml = avatarUrl
-                    ? `<img src="${avatarUrl}" alt="${video.channelTitle}" class="w-9 h-9 rounded-full">`
-                    : `<div class="w-9 h-9 rounded-full bg-gray-700 flex items-center justify-center text-white font-semibold text-lg">${video.channelTitle.charAt(0)}</div>`;
+                card.className = `video-card ${isShortsView ? 'short-card' : ''}`;
+                
+                const isInWatchLater = isWatchLater(video.videoId);
+                const watchLaterIcon = isInWatchLater
+                    ? `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.414-1.415L11 9.586V6z" clip-rule="evenodd" /></svg>` // Filled clock
+                    : `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>`; // Outline clock
+
+                const videoInfoHtml = isShortsView
+                    ? `
+                        <div class="mt-2">
+                            <h2 class="text-sm font-bold text-gray-100 leading-snug line-clamp-2" title="${video.title}">${video.title}</h2>
+                            <p class="text-xs text-gray-400 mt-1">${video.channelTitle}</p>
+                        </div>
+                    `
+                    : `
+                        <div class="flex items-start mt-3">
+                            <div class="flex-shrink-0 mr-3 cursor-pointer" onclick="showChannelPage('${video.channelId}')">
+                                <img src="${channelAvatars.get(video.channelId) || ''}" alt="${video.channelTitle}" class="w-9 h-9 rounded-full bg-gray-700">
+                            </div>
+                            <div class="flex-grow">
+                                <h2 class="text-base font-bold text-gray-100 leading-snug line-clamp-2" title="${video.title}" onclick="openPlayerModal('${video.videoId}')">${video.title}</h2>
+                                <p onclick="showChannelPage('${video.channelId}')" class="text-sm text-gray-400 mt-1 cursor-pointer hover:text-white transition-colors">${video.channelTitle}</p>
+                                <p class="text-sm text-gray-400">${timeSince(video.publishedAt)}</p>
+                            </div>
+                        </div>
+                    `;
 
                 card.innerHTML = `
                     <div class="thumbnail-container rounded-lg" onclick="openPlayerModal('${video.videoId}')">
                         <img src="${video.thumbnailUrl}" alt="${video.title}" loading="lazy" class="object-cover w-full h-full">
+                        <button onclick="toggleWatchLater('${video.videoId}', event)" class="watch-later-btn" title="Watch Later">
+                            ${watchLaterIcon}
+                        </button>
                     </div>
-                    <div class="flex items-start mt-3">
-                        <div class="flex-shrink-0 mr-3">
-                            ${avatarHtml}
-                        </div>
-                        <div class="flex-grow">
-                            <h2 class="text-base font-bold text-gray-100 leading-snug line-clamp-2" title="${video.title}" onclick="openPlayerModal('${video.videoId}')">${video.title}</h2>
-                            <p onclick="showChannelPage('${video.channelId}')" class="text-sm text-gray-400 mt-1 cursor-pointer hover:text-white transition-colors">${video.channelTitle}</p>
-                            <p class="text-sm text-gray-400">${timeSince(video.publishedAt)}</p>
-                        </div>
-                    </div>
+                    ${videoInfoHtml}
                 `;
                 container.appendChild(card);
             });
         }
         
-        // --- Subscription Logic ---
-        function loadSubscriptions() {
-            const storedSubs = localStorage.getItem('videoFeedSubscriptions');
-            if (storedSubs) {
-                subscribedChannels = JSON.parse(storedSubs);
-            }
+        // --- Playlist, Subscription & Progress Logic ---
+        function loadUserData() {
+            const storedSubs = localStorage.getItem('kosherTubeSubscriptions');
+            if (storedSubs) subscribedChannels = JSON.parse(storedSubs);
+
+            const storedWatchLater = localStorage.getItem('kosherTubeWatchLater');
+            if (storedWatchLater) watchLaterVideos = JSON.parse(storedWatchLater);
+
+            const storedProgress = localStorage.getItem('kosherTubeProgress');
+            if (storedProgress) videoProgress = JSON.parse(storedProgress);
         }
 
         function saveSubscriptions() {
-            localStorage.setItem('videoFeedSubscriptions', JSON.stringify(subscribedChannels));
+            localStorage.setItem('kosherTubeSubscriptions', JSON.stringify(subscribedChannels));
         }
 
-        function isSubscribed(channelId) {
-            return subscribedChannels.includes(channelId);
+        function saveWatchLater() {
+            localStorage.setItem('kosherTubeWatchLater', JSON.stringify(watchLaterVideos));
         }
+
+        function saveProgress(videoId) {
+            if (player && typeof player.getCurrentTime === 'function') {
+                const currentTime = player.getCurrentTime();
+                if (currentTime > 0) {
+                    videoProgress[videoId] = currentTime;
+                    localStorage.setItem('kosherTubeProgress', JSON.stringify(videoProgress));
+                }
+            }
+        }
+        
+        function isSubscribed(channelId) { return subscribedChannels.includes(channelId); }
+        function isWatchLater(videoId) { return watchLaterVideos.includes(videoId); }
 
         function updateSubscribeButton(channelId) {
             const subBtn = document.getElementById('subscribe-btn');
@@ -317,16 +372,21 @@
         function toggleSubscription(channelId) {
             if (!channelId) return;
             const index = subscribedChannels.indexOf(channelId);
-            if (index > -1) {
-                subscribedChannels.splice(index, 1);
-            } else {
-                subscribedChannels.push(channelId);
-            }
+            if (index > -1) subscribedChannels.splice(index, 1);
+            else subscribedChannels.push(channelId);
             saveSubscriptions();
             updateSubscribeButton(channelId);
-            if(currentSortMode === 'subscriptions') {
-                displayMainFeedVideos();
-            }
+            if(currentSortMode === 'subscriptions') displayMainFeedVideos();
+        }
+
+        function toggleWatchLater(videoId, event) {
+            event.stopPropagation(); // Prevent modal from opening
+            if (!videoId) return;
+            const index = watchLaterVideos.indexOf(videoId);
+            if (index > -1) watchLaterVideos.splice(index, 1);
+            else watchLaterVideos.unshift(videoId); // Add to beginning
+            saveWatchLater();
+            displayMainFeedVideos(); // Re-render to update icon and list
         }
 
         // --- Main Feed Logic ---
@@ -336,33 +396,27 @@
                 displayMainFeedVideos();
                 return;
             }
-            const filtered = allFetchedVideos.filter(v => v.title.toLowerCase().includes(searchTerm) || v.channelTitle.toLowerCase().includes(searchTerm));
+            const baseVideos = currentSortMode === 'shorts' ? allFetchedVideos.filter(v => v.isShort) : allFetchedVideos.filter(v => !v.isShort);
+            const filtered = baseVideos.filter(v => v.title.toLowerCase().includes(searchTerm) || v.channelTitle.toLowerCase().includes(searchTerm));
             renderVideos(filtered, 'video-grid');
-            updateMainMenuButtons(null);
+            updateMainMenuButtons(null); // Deselect menu buttons during search
             document.getElementById('subscriptions-filter-bar').classList.add('hidden');
         }
 
         function updateMainMenuButtons(activeMenu) {
-            const forYouBtn = document.getElementById('menu-foryou-btn');
-            const recentBtn = document.getElementById('menu-recent-btn');
-            const subsBtn = document.getElementById('menu-subscriptions-btn');
-            
-            const activeClasses = 'px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium';
-            const inactiveClasses = 'px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white';
-
-            if(forYouBtn) forYouBtn.className = (activeMenu === 'forYou') ? activeClasses : inactiveClasses;
-            if(recentBtn) recentBtn.className = (activeMenu === 'recent') ? activeClasses : inactiveClasses;
-            if(subsBtn) subsBtn.className = (activeMenu === 'subscriptions') ? activeClasses : inactiveClasses;
+            document.querySelectorAll('#main-feed-menu button').forEach(button => {
+                const isActive = button.id === `menu-${activeMenu}-btn`;
+                button.className = isActive
+                    ? 'px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium'
+                    : 'px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white';
+            });
         }
         
         function renderSubscriptionChannelBar() {
             const bar = document.getElementById('subscriptions-filter-bar');
             bar.innerHTML = '';
             
-            if (subscribedChannels.length === 0) {
-                bar.classList.add('hidden');
-                return;
-            }
+            if (subscribedChannels.length === 0) { bar.classList.add('hidden'); return; }
             
             bar.classList.remove('hidden');
 
@@ -373,23 +427,22 @@
                 }
             });
 
-            // "All" button
             const allBtn = document.createElement('button');
-            allBtn.textContent = 'All';
             allBtn.onclick = () => filterSubscriptionFeed('all');
-            allBtn.className = `flex-shrink-0 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${selectedSubscriptionChannelId === 'all' ? 'bg-gray-200 text-gray-900' : 'bg-gray-700 text-gray-200 hover:bg-gray-600'}`;
+            allBtn.className = `flex-shrink-0 flex flex-col items-center gap-2 p-2 rounded-lg text-xs font-medium transition-colors w-20 ${selectedSubscriptionChannelId === 'all' ? 'bg-gray-700' : 'hover:bg-gray-700'}`;
+            allBtn.innerHTML = `<div class="w-14 h-14 bg-gray-800 rounded-full flex items-center justify-center text-lg">All</div><span>All</span>`;
             bar.appendChild(allBtn);
 
             channelDetails.forEach((title, id) => {
                 const channelBtn = document.createElement('button');
                 const avatarUrl = channelAvatars.get(id);
                 const avatarHtml = avatarUrl
-                    ? `<img src="${avatarUrl}" alt="${title}" class="w-8 h-8 rounded-full">`
-                    : `<div class="w-8 h-8 rounded-full bg-gray-800 flex items-center justify-center text-white font-semibold text-base">${title.charAt(0)}</div>`;
+                    ? `<img src="${avatarUrl}" alt="${title}" class="w-14 h-14 rounded-full">`
+                    : `<div class="w-14 h-14 rounded-full bg-gray-800 flex items-center justify-center text-white font-semibold text-xl">${title.charAt(0)}</div>`;
 
-                channelBtn.className = `flex-shrink-0 flex items-center gap-2 p-2 rounded-lg text-sm font-medium transition-colors ${selectedSubscriptionChannelId === id ? 'bg-gray-700' : 'hover:bg-gray-700'}`;
+                channelBtn.className = `flex-shrink-0 flex flex-col items-center gap-2 p-2 rounded-lg text-xs font-medium transition-colors w-20 text-center ${selectedSubscriptionChannelId === id ? 'bg-gray-700' : 'hover:bg-gray-700'}`;
                 channelBtn.onclick = () => filterSubscriptionFeed(id);
-                channelBtn.innerHTML = avatarHtml;
+                channelBtn.innerHTML = `${avatarHtml}<span class="truncate w-full">${title}</span>`;
                 bar.appendChild(channelBtn);
             });
         }
@@ -400,25 +453,35 @@
         }
 
         function displayMainFeedVideos() {
-            let videosToRender = [...allFetchedVideos];
+            let videosToRender;
             const subsFilterBar = document.getElementById('subscriptions-filter-bar');
+            subsFilterBar.classList.add('hidden');
 
-            if (currentSortMode === 'forYou') {
-                subsFilterBar.classList.add('hidden');
+            const regularVideos = allFetchedVideos.filter(v => !v.isShort);
+            const shorts = allFetchedVideos.filter(v => v.isShort);
+
+            if (currentSortMode === 'shorts') {
+                videosToRender = shorts;
+            } else if (currentSortMode === 'all') {
+                videosToRender = [...regularVideos];
                 for (let i = videosToRender.length - 1; i > 0; i--) {
                     const j = Math.floor(Math.random() * (i + 1));
                     [videosToRender[i], videosToRender[j]] = [videosToRender[j], videosToRender[i]];
                 }
             } else if (currentSortMode === 'subscriptions') {
                  renderSubscriptionChannelBar();
-                 let filteredBySub = videosToRender.filter(v => subscribedChannels.includes(v.channelId));
+                 let filteredBySub = regularVideos.filter(v => subscribedChannels.includes(v.channelId));
                  if (selectedSubscriptionChannelId !== 'all') {
                      videosToRender = filteredBySub.filter(v => v.channelId === selectedSubscriptionChannelId);
                  } else {
                      videosToRender = filteredBySub;
                  }
-            } else { // 'recent'
-                subsFilterBar.classList.add('hidden');
+            } else if (currentSortMode === 'watchLater') {
+                const watchLaterMap = new Map(allFetchedVideos.map(v => [v.videoId, v]));
+                videosToRender = watchLaterVideos.map(id => watchLaterMap.get(id)).filter(Boolean);
+            }
+            else { // 'recent'
+                videosToRender = regularVideos;
             }
             
             renderVideos(videosToRender, 'video-grid');
@@ -440,16 +503,15 @@
             document.getElementById('channel-page-view').classList.remove('hidden');
             window.scrollTo(0, 0);
 
-            const channelVideos = allFetchedVideos.filter(v => v.channelId === channelId);
+            const channelVideos = allFetchedVideos.filter(v => v.channelId === channelId && !v.isShort);
             const videoCount = channelVideos.length;
-            const channelTitle = channelVideos[0]?.channelTitle || 'Channel';
+            const channelTitle = allFetchedVideos.find(v => v.channelId === channelId)?.channelTitle || 'Channel';
 
             const avatarContainer = document.getElementById('channel-page-avatar');
             const avatarUrl = channelAvatars.get(channelId);
             avatarContainer.innerHTML = avatarUrl
                 ? `<img src="${avatarUrl}" alt="${channelTitle}" class="w-12 h-12 rounded-full">`
                 : `<div class="w-12 h-12 rounded-full bg-gray-700 flex items-center justify-center text-white font-bold text-2xl">${channelTitle.charAt(0)}</div>`;
-
 
             document.getElementById('channel-page-title').textContent = channelTitle;
             document.getElementById('channel-video-count').textContent = `${videoCount} videos`;
@@ -477,7 +539,7 @@
 
         function sortAndRenderChannelVideos(sortBy) {
             if (!currentChannelId) return;
-            const channelVideos = allFetchedVideos.filter(v => v.channelId === currentChannelId);
+            const channelVideos = allFetchedVideos.filter(v => v.channelId === currentChannelId && !v.isShort);
             if (sortBy === 'newest') {
                 channelVideos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
             } else if (sortBy === 'oldest') {
@@ -490,23 +552,49 @@
         // --- Player and Modal Logic ---
         function setupPlayer(videoId) {
             if (player) player.destroy();
+            
+            const startTime = videoProgress[videoId] || 0;
+
             document.getElementById('player-container').innerHTML = '<div id="yt-player"></div>';
             player = new YT.Player('yt-player', {
                 videoId: videoId,
-                playerVars: { 'playsinline': 1, 'enablejsapi': 1, 'rel': 0, 'modestbranding': 1, 'origin': window.location.origin, 'controls': 1, 'autoplay': 1, 'iv_load_policy': 3 },
+                playerVars: { 
+                    'playsinline': 1, 
+                    'enablejsapi': 1, 
+                    'rel': 0, 
+                    'modestbranding': 1, 
+                    'origin': window.location.origin, 
+                    'controls': 1, 
+                    'autoplay': 1, 
+                    'iv_load_policy': 3,
+                    'start': Math.floor(startTime)
+                },
                 events: { 'onReady': () => console.log("Player ready."), 'onStateChange': onPlayerStateChange }
             });
         }
 
         function onPlayerStateChange(event) {
-            if (event.data === YT.PlayerState.ENDED) {
-                event.target.stopVideo();
-                removePlayerIframe();
-                document.getElementById('video-ended-overlay').classList.remove('hidden');
+            if (event.data === YT.PlayerState.PLAYING) {
+                clearInterval(progressInterval);
+                progressInterval = setInterval(() => saveProgress(currentVideoId), 5000);
+            } else {
+                clearInterval(progressInterval);
+                if(event.data === YT.PlayerState.PAUSED) {
+                    saveProgress(currentVideoId);
+                }
+                if (event.data === YT.PlayerState.ENDED) {
+                    delete videoProgress[currentVideoId]; // Remove progress when video finishes
+                    localStorage.setItem('kosherTubeProgress', JSON.stringify(videoProgress));
+                    
+                    event.target.stopVideo();
+                    removePlayerIframe();
+                    document.getElementById('video-ended-overlay').classList.remove('hidden');
+                }
             }
         }
 
         function removePlayerIframe() {
+            clearInterval(progressInterval);
             if (player) {
                 player.destroy();
                 player = null;
@@ -525,6 +613,8 @@
         }
 
         function closePlayerModal() {
+            clearInterval(progressInterval);
+            if(currentVideoId) saveProgress(currentVideoId);
             document.getElementById('player-modal').classList.add('hidden');
             document.body.classList.remove('overflow-hidden');
             removePlayerIframe();
@@ -536,7 +626,7 @@
         }
         
         window.onload = async function() {
-            loadSubscriptions();
+            loadUserData();
             allFetchedVideos = await fetchAllVideosFromSources();
             const allChannelIds = [...new Set(allFetchedVideos.map(v => v.channelId))];
             channelAvatars = await fetchChannelDetails(allChannelIds);
@@ -551,10 +641,12 @@
     <!-- Main Feed View -->
     <div id="main-feed-view">
         <div class="px-4 sm:px-8 mt-6">
-             <div id="main-feed-menu" class="flex items-center space-x-2 pb-4 border-b border-gray-800">
-                <button id="menu-foryou-btn" onclick="setSortMode('forYou')" class="px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium">For You</button>
-                <button id="menu-recent-btn" onclick="setSortMode('recent')" class="px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Recently Uploaded</button>
-                <button id="menu-subscriptions-btn" onclick="setSortMode('subscriptions')" class="px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Subscriptions</button>
+             <div id="main-feed-menu" class="flex items-center space-x-2 pb-4 border-b border-gray-800 overflow-x-auto">
+                <button id="menu-all-btn" onclick="setSortMode('all')" class="flex-shrink-0 px-4 py-1.5 bg-gray-600 text-white rounded-full text-sm font-medium">All</button>
+                <button id="menu-shorts-btn" onclick="setSortMode('shorts')" class="flex-shrink-0 px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Shorts</button>
+                <button id="menu-recent-btn" onclick="setSortMode('recent')" class="flex-shrink-0 px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Recently Uploaded</button>
+                <button id="menu-subscriptions-btn" onclick="setSortMode('subscriptions')" class="flex-shrink-0 px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Subscriptions</button>
+                <button id="menu-watchLater-btn" onclick="setSortMode('watchLater')" class="flex-shrink-0 px-4 py-1.5 bg-gray-800 text-gray-400 rounded-full text-sm font-medium hover:bg-gray-700 hover:text-white">Watch Later</button>
             </div>
              <div id="subscriptions-filter-bar" class="hidden flex items-center gap-4 overflow-x-auto py-4">
                 <!-- Channel avatars for filtering will be inserted here by JS -->
@@ -566,7 +658,7 @@
             <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-red-600 inline-block mr-2"></div>
             <span class="text-gray-400">Loading latest videos...</span>
         </div>
-        <main id="video-grid" class="px-4 sm:px-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-x-4 gap-y-8"></main>
+        <main id="video-grid" class="mt-8"></main>
     </div>
     
     <!-- Channel Page View -->
